@@ -1,25 +1,3 @@
-// Sceneries
-export type Availability = 'default' | 'unavailable' | 'nonPublic' | 'abandoned' | 'nonDefault';
-
-export interface ISceneryAPI {
-  id: string;
-  hash: string;
-  name: string;
-  url: string;
-  lines: string;
-  project: string | null;
-  projectUrl: string | null;
-  reqLevel: number;
-  signalType: string;
-  controlType: string;
-  SUP: boolean;
-  routes: string;
-  checkpoints: string;
-  authors: string;
-  availability: Availability;
-}
-
-// Trains
 export interface ITrainTimetable {
   timetableId: number;
   category: string;
@@ -60,7 +38,7 @@ export interface ITimetableStop {
   stopTime: number;
 }
 
-export interface ITrainAPI {
+export interface IActiveTrain {
   trainNo: number;
 
   mass: number;
@@ -89,3 +67,4 @@ export interface ITrainAPI {
   timetable?: ITrainTimetable;
 }
 
+export type TrainsAPIResponse = IActiveTrain[];

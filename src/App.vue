@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import HelloWorld from './components/HelloWorld.vue';
+import RouteConnectionTable from './components/RouteConnectionTable.vue';
 </script>
 
 <template>
-  <div class="container mx-auto h-screen">
-    <HelloWorld />
+  <div class="max-w-screen-2xl mx-auto">
+    <RouteConnectionTable />
   </div>
 </template>
 
