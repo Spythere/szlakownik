@@ -43,6 +43,8 @@ export const useStore = defineStore('global', {
     sceneries: [] as ISceneryData[],
     dispatchers: [] as IDispatcherOnline[],
 
+    trafficFactor: 0,
+
     takenConnectionsNames: [] as string[],
   }),
 
