@@ -43,6 +43,7 @@ export const useStore = defineStore('global', {
     sceneries: [] as ISceneryData[],
     dispatchers: [] as IDispatcherOnline[],
 
+    dataLoading: false,
     trafficFactor: 0,
 
     takenConnectionsNames: [] as string[],
@@ -166,30 +167,35 @@ export const useStore = defineStore('global', {
   },
 
   actions: {
-    startFetchingData() {
+    async startFetchingData() {
+      this.dataLoading = true;
+      const sceneriesResponse = await apiClient.get<SceneriesAPIResponse>('getSceneries');
+      this.sceneries = sceneriesResponse.data;
+
       this.fetchData();
 
       setInterval(() => {
         this.fetchData();
-        console.log('data fetched');
       }, 25 * 1000);
     },
 
     async fetchData() {
       try {
-        const [trainsResponse, sceneriesResponse, dispatchersResponse] = await Promise.all([
+        const [trainsResponse, dispatchersResponse] = await Promise.all([
           apiClient.get<TrainsAPIResponse>('getActiveTrainList'),
-          apiClient.get<SceneriesAPIResponse>('getSceneries'),
           apiClient.get<DispatchersAPIResponse>('getDispatchers?online=1&countLimit=100'),
         ]);
 
         this.trains = trainsResponse.data;
-        this.sceneries = sceneriesResponse.data;
         this.dispatchers = dispatchersResponse.data;
       } catch (error) {
         console.error(error);
       }
+
+      this.dataLoading = false;
     },
   },
 });
+
+
 

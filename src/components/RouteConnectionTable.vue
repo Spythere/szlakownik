@@ -113,7 +113,10 @@ function getDispatcherStatus(stationHash: string) {
               </tr>
             </tbody>
           </table>
+        
+          <div class="w-100 border border-slate-600 p-2 bg-slate-900 mt-2 text-xl text-center" v-if="store.dataLoading">Ładowanie danych...</div>
         </div>
+        
       </section>
     </div>
   </div>
