@@ -1,41 +1,17 @@
 import axios from 'axios';
 import { defineStore } from 'pinia';
-import { IRouteConnectionData, IRouteConnectionInfo } from '../ts/interfaces/IRouteConnectionInfo';
+import { IRouteConnectionInfo } from '../ts/interfaces/IRouteConnectionInfo';
 import { IActiveTrain, TrainsAPIResponse } from '../ts/interfaces/IActiveTrain';
 import { ISceneryData, SceneriesAPIResponse } from '../ts/interfaces/ISceneryData';
 import { IDispatcherOnline } from '../ts/interfaces/IDispatcherOnline';
 import { IRouteTrain } from '../ts/interfaces/IRouteTrain';
 import { DispatchersAPIResponse } from '../ts/interfaces/IDispatcherOnline';
 import { sortConnectionsBy } from '../utils/sortingUtils';
+import { getRouteData, getSceneryName } from '../utils/dataUtils';
 
 const apiClient = axios.create({
   baseURL: 'https://spythere.pl/api/',
 });
-
-function getSceneryName(sceneries: ISceneryData[], hash: string) {
-  return sceneries.find((sc) => sc.hash == hash)?.name;
-}
-
-function getRouteData(
-  sceneries: ISceneryData[],
-  routeName: string,
-  sceneryHash: string
-): IRouteConnectionData | undefined {
-  const data = sceneries
-    .find((sc) => sc.hash === sceneryHash)
-    ?.routes.split(';')
-    .find((route) => route.split('_')[0] == routeName);
-
-  if (!data) return undefined;
-
-  const [route, vMax, length] = data.split(':');
-
-  return {
-    trackCount: Number(route.split('_')[1][0]) || 0,
-    vMax: Number(vMax) || 0,
-    length: Number(length) || 0,
-  };
-}
 
 export const useStore = defineStore('global', {
   state: () => ({
@@ -43,44 +19,110 @@ export const useStore = defineStore('global', {
     sceneries: [] as ISceneryData[],
     dispatchers: [] as IDispatcherOnline[],
 
+    availableConnections: [] as IRouteConnectionInfo[],
+
     dataLoading: false,
     trafficFactor: 0,
 
+    isFilterCardOpen: false,
+
+    filters: {
+      freeFrom: '',
+      freeTo: '',
+      timeSpan: 5,
+      statusFrom: 0,
+      include1track: true,
+      include2track: true,
+      minimumRouteSpeed: 0,
+      includeOfflineStatus: true,
+      includeUnsignedStatus: true,
+      includeEndingStatus: true,
+      save: true
+    },
+
     takenConnectionsNames: [] as string[],
+    ignoredSceneries: [] as string[],
   }),
 
   getters: {
-    freeConnections: (state) => {
-      return state.dispatchers.reduce((acc, d) => {
-        const sceneryData = state.sceneries.find((s) => s.hash === d.stationHash);
-        if (!sceneryData) return acc;
+    filteredConnections(state) {
+      return state.availableConnections.filter((conn) => {
+        if (!state.filters.include1track && conn.routeData?.trackCount == 1) return false;
+        if (!state.filters.include2track && conn.routeData?.trackCount == 2) return false;
 
-        const sceneryRouteNames = sceneryData.routes.split(';').map((r) => r.split('_')[0]);
+        const status = state.dispatchers.find((d) => d.stationHash == conn.sceneryHash)?.dispatcherStatus;
 
-        sceneryRouteNames.forEach((routeName) => {
-          if (state.takenConnectionsNames.includes(routeName)) return acc;
-          if (routeName.includes('!')) return acc;
+        if (!state.filters.includeEndingStatus && status == 2) return false;
+        if (!state.filters.includeOfflineStatus && status === undefined) return false;
+        if (!state.filters.includeUnsignedStatus && status == -1) return false;
 
-          const savedInfo = acc.find((info) => info.routeName == routeName && info.sceneryHash == d.stationHash);
+        if((conn.routeData?.vMax || 0) < state.filters.minimumRouteSpeed) return false;
 
-          if (!savedInfo) {
-            acc.push({
-              routeName,
-              sceneryHash: d.stationHash,
-              arrivalTrains: [],
-              departureTrains: [],
-              sceneryName: d.stationName,
-              routeData: getRouteData(state.sceneries, routeName, d.stationHash),
-            });
-          }
-        });
+        const statusFromDate = new Date().setUTCHours(new Date().getUTCHours() + state.filters.statusFrom);
 
-        return acc;
-      }, [] as IRouteConnectionInfo[]);
+        if (status !== undefined && status > 4 && statusFromDate - status > 0) return false;
+
+        if (state.filters.freeFrom) {
+          const freeFrom = new Date().setHours(
+            Number(state.filters.freeFrom.split(':')[0]),
+            Number(state.filters.freeFrom.split(':')[1])
+          );
+
+          const areArrivalsFree = conn.arrivalTrains.every((t) => {
+            if (t.takenRouteAt - state.filters.timeSpan * 60000 < freeFrom) return false;
+
+            return true;
+          });
+
+          const areDeparturesFree = conn.departureTrains.every((t) => {
+            if (t.takenRouteAt - state.filters.timeSpan * 60000 < freeFrom) return false;
+
+            return true;
+          });
+
+          return conn.routeData?.trackCount == 1
+            ? areArrivalsFree && areDeparturesFree
+            : areArrivalsFree || areDeparturesFree;
+        }
+
+        return true;
+      });
+    },
+  },
+
+  actions: {
+    async startFetchingData() {
+      this.dataLoading = true;
+      const sceneriesResponse = await apiClient.get<SceneriesAPIResponse>('getSceneries');
+      this.sceneries = sceneriesResponse.data;
+
+      this.fetchData();
+
+      setInterval(() => {
+        this.fetchData();
+      }, 25 * 1000);
     },
 
-    takenConnections: (state) => {
-      const reducedConns = state.trains.reduce((acc, train) => {
+    async fetchData() {
+      try {
+        const [trainsResponse, dispatchersResponse] = await Promise.all([
+          apiClient.get<TrainsAPIResponse>('getActiveTrainList'),
+          apiClient.get<DispatchersAPIResponse>('getDispatchers?online=1&countLimit=100'),
+        ]);
+
+        this.trains = trainsResponse.data;
+        this.dispatchers = dispatchersResponse.data;
+
+        this.getAvailableConnections();
+      } catch (error) {
+        console.error(error);
+      }
+
+      this.dataLoading = false;
+    },
+
+    getAvailableConnections() {
+      const takenConnections = this.trains.reduce((acc, train) => {
         if (!train.timetable) return acc;
 
         const routeSceneries = [...train.timetable.sceneries].reverse();
@@ -115,8 +157,8 @@ export const useStore = defineStore('global', {
                 sceneryHash: routeSceneries[currentSceneryIndex],
                 arrivalTrains: [timetableTrain],
                 departureTrains: [],
-                sceneryName: getSceneryName(state.sceneries, routeSceneries[currentSceneryIndex] || ''),
-                routeData: getRouteData(state.sceneries, stop.arrivalLine, routeSceneries[currentSceneryIndex] || ''),
+                sceneryName: getSceneryName(this.sceneries, routeSceneries[currentSceneryIndex] || ''),
+                routeData: getRouteData(this.sceneries, stop.arrivalLine, routeSceneries[currentSceneryIndex] || ''),
               });
           }
 
@@ -148,8 +190,8 @@ export const useStore = defineStore('global', {
                 sceneryHash: routeSceneries[currentSceneryIndex],
                 departureTrains: [timetableTrain],
                 arrivalTrains: [],
-                sceneryName: getSceneryName(state.sceneries, routeSceneries[currentSceneryIndex] || ''),
-                routeData: getRouteData(state.sceneries, stop.departureLine, routeSceneries[currentSceneryIndex] || ''),
+                sceneryName: getSceneryName(this.sceneries, routeSceneries[currentSceneryIndex] || ''),
+                routeData: getRouteData(this.sceneries, stop.departureLine, routeSceneries[currentSceneryIndex] || ''),
               });
           }
 
@@ -159,43 +201,36 @@ export const useStore = defineStore('global', {
         return acc;
       }, [] as IRouteConnectionInfo[]);
 
-      sortConnectionsBy('departureTrains', 'asc', reducedConns);
-      state.takenConnectionsNames = reducedConns.map((conn) => conn.routeName);
+      const freeConnections = this.dispatchers.reduce((acc, d) => {
+        const sceneryData = this.sceneries.find((s) => s.hash === d.stationHash);
+        if (!sceneryData) return acc;
 
-      return reducedConns;
-    },
-  },
+        const sceneryRouteNames = sceneryData.routes.split(';').map((r) => r.split('_')[0]);
 
-  actions: {
-    async startFetchingData() {
-      this.dataLoading = true;
-      const sceneriesResponse = await apiClient.get<SceneriesAPIResponse>('getSceneries');
-      this.sceneries = sceneriesResponse.data;
+        sceneryRouteNames.forEach((routeName) => {
+          if (takenConnections.find((conn) => conn.routeName === routeName)) return acc;
+          if (routeName.includes('!')) return acc;
 
-      this.fetchData();
+          const savedInfo = acc.find((info) => info.routeName == routeName && info.sceneryHash == d.stationHash);
 
-      setInterval(() => {
-        this.fetchData();
-      }, 25 * 1000);
-    },
+          if (!savedInfo) {
+            acc.push({
+              routeName,
+              sceneryHash: d.stationHash,
+              arrivalTrains: [],
+              departureTrains: [],
+              sceneryName: d.stationName,
+              routeData: getRouteData(this.sceneries, routeName, d.stationHash),
+            });
+          }
+        });
 
-    async fetchData() {
-      try {
-        const [trainsResponse, dispatchersResponse] = await Promise.all([
-          apiClient.get<TrainsAPIResponse>('getActiveTrainList'),
-          apiClient.get<DispatchersAPIResponse>('getDispatchers?online=1&countLimit=100'),
-        ]);
+        return acc;
+      }, [] as IRouteConnectionInfo[]);
 
-        this.trains = trainsResponse.data;
-        this.dispatchers = dispatchersResponse.data;
-      } catch (error) {
-        console.error(error);
-      }
-
-      this.dataLoading = false;
+      this.availableConnections = [...takenConnections, ...freeConnections];
+      sortConnectionsBy('departureTrains', 'asc', this.availableConnections);
     },
   },
 });
-
-
 
